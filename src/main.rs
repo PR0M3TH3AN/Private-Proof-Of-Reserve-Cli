@@ -2,7 +2,7 @@
 //! Prototype CLI for a lower-bound Bitcoin proof-of-reserve.
 //! SECURITY:  demo code only.
 
-use std::{fs::File, path::PathBuf, str::FromStr};
+use std::{fs::File, path::PathBuf, str::FromStr, time::Duration};
 use anyhow::Result;
 use bitcoin::{Address, Txid};
 use bitcoin::address::NetworkChecked;
@@ -16,6 +16,9 @@ use bulletproofs::{BulletproofGens, PedersenGens, RangeProof};
 use merlin::Transcript;
 use sha2::{Digest, Sha256};
 use base64::{engine::general_purpose, Engine as _};
+use qrcodegen::{QrCode, QrCodeEcc};
+use base58::ToBase58;
+use serde_json::json;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -39,6 +42,26 @@ enum Cmd {
         #[arg(long)] rpc_user: String,
         #[arg(long)] rpc_pass: String,
     },
+    BuildPsbt {
+        #[arg(long)] rpc_url: String,
+        #[arg(long)] rpc_user: String,
+        #[arg(long)] rpc_pass: String,
+        #[arg(long)] address: String,
+        #[arg(long)] min: u64,
+        #[arg(long)] height: u64,
+        #[arg(long, default_value_t = false)]
+        qr: bool,
+        #[arg(long, default_value = "unsigned.psbt")]
+        psbt_out: PathBuf,
+        #[arg(long, default_value = "draft.json")]
+        draft_out: PathBuf,
+    },
+    AttachSigs {
+        #[arg(long)] draft: PathBuf,
+        #[arg(long)] signed_psbt: PathBuf,
+        #[arg(long, default_value = "proof.json")]
+        out: PathBuf,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -50,6 +73,10 @@ struct Proof {
     diff_commitment: String,
     ownership_proofs: Vec<String>,
     min_amount: u64,
+    #[serde(default)]
+    psbt_hash: Option<String>,
+    #[serde(default)]
+    signing_type: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -64,6 +91,20 @@ fn main() -> Result<()> {
             let pf: Proof = serde_json::from_reader(File::open(&proof)?)?;
             verify_proof(&pf, &rpc_url, &rpc_user, &rpc_pass)?;
             println!("✅ proof verified");
+        }
+        Cmd::BuildPsbt { rpc_url, rpc_user, rpc_pass, address, min, height, qr, psbt_out, draft_out } => {
+            let (psbt, draft) = build_psbt(&rpc_url, &rpc_user, &rpc_pass, &address, min, height)?;
+            std::fs::write(&psbt_out, &psbt)?;
+            serde_json::to_writer_pretty(File::create(&draft_out)?, &draft)?;
+            println!("✅ PSBT and draft saved");
+            if qr { display_qr_frames(&psbt, 5)?; }
+        }
+        Cmd::AttachSigs { draft, signed_psbt, out } => {
+            let mut pf: Proof = serde_json::from_reader(File::open(&draft)?)?;
+            let psbt = std::fs::read_to_string(&signed_psbt)?;
+            attach_sigs(&mut pf, &psbt)?;
+            serde_json::to_writer_pretty(File::create(out)?, &pf)?;
+            println!("✅ proof completed");
         }
     }
     Ok(())
@@ -165,6 +206,105 @@ fn verify_proof(pf: &Proof, rpc_url: &str, rpc_user: &str, rpc_pass: &str) -> Re
     let commitment = CompressedRistretto::from_slice(&v_bytes);
     let mut t = Transcript::new(b"por");
     bp.verify_single(&BulletproofGens::new(64, 1), &PedersenGens::default(), &mut t, &commitment, 64)?;
+    Ok(())
+}
+
+// ── psbt workflow ────────────────────────────────────────────
+
+fn build_psbt(rpc_url: &str, rpc_user: &str, rpc_pass: &str,
+              address: &str, min: u64, height: u64) -> Result<(String, Proof)> {
+    let rpc = Client::new(rpc_url, Auth::UserPass(rpc_user.into(), rpc_pass.into()))?;
+
+    let addr_raw = Address::from_str(address)?;
+    let net      = *addr_raw.network();
+    let addr_chk = addr_raw.require_network(net)?;
+
+    let utxos = fetch_utxos(&rpc, &addr_chk)?;
+    anyhow::ensure!(!utxos.is_empty(), "address has no UTXOs");
+
+    let (commitments, total) = commit_utxos(&utxos);
+    anyhow::ensure!(total >= min, "balance below threshold");
+
+    let gens  = BulletproofGens::new(64, 1);
+    let blind = Scalar::random(&mut OsRng);
+    let mut t = Transcript::new(b"por");
+    let (bp, diff_commit) = RangeProof::prove_single(
+        &gens, &PedersenGens::default(), &mut t,
+        total - min, &blind, 64)?;
+
+    let root = merkle_root(commitments.clone());
+    let merkle_hex = hex::encode(root);
+
+    let inputs: Vec<serde_json::Value> = utxos.iter()
+        .map(|u| json!({"txid": u.txid, "vout": u.vout}))
+        .collect();
+    let options = json!({"feeRate": 0, "changePosition": -1, "lockUnspents": true});
+    let res: serde_json::Value = rpc.call(
+        "walletcreatefundedpsbt",
+        &[inputs.into(), json!({"data": merkle_hex.clone()}).into(), serde_json::Value::Null,
+          options.into(), true.into()])?;
+    let psbt_str = res["psbt"].as_str().unwrap().to_string();
+
+    let psbt_bytes = base64::decode(&psbt_str)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&psbt_bytes);
+    let psbt_hash = hex::encode(hasher.finalize());
+
+    let proof = Proof {
+        block_height: height,
+        utxo_root: merkle_hex,
+        commitments: commitments.iter().map(hex::encode).collect(),
+        range_proof: general_purpose::STANDARD.encode(bp.to_bytes()),
+        diff_commitment: hex::encode(diff_commit.to_bytes()),
+        ownership_proofs: Vec::new(),
+        min_amount: min,
+        psbt_hash: Some(psbt_hash),
+        signing_type: Some("psbt-opreturn-v1".to_string()),
+    };
+
+    Ok((psbt_str, proof))
+}
+
+fn display_qr_frames(data: &str, fps: u64) -> Result<()> {
+    let raw = data.as_bytes();
+    let chunks: Vec<&[u8]> = raw.chunks(400).collect();
+    println!("Building PSBT QR ({} frames, press Ctrl-C to abort) …", chunks.len());
+    for chunk in chunks.iter() {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(chunk);
+        let text = frame.to_base58();
+        let qr = QrCode::encode_text(&text, QrCodeEcc::Low)?;
+        println!("{}", qr.to_string(true, 2));
+        std::thread::sleep(Duration::from_millis(1000 / fps));
+    }
+    Ok(())
+}
+
+fn attach_sigs(proof: &mut Proof, psbt_str: &str) -> Result<()> {
+    use std::str::FromStr;
+    let psbt: bitcoin::psbt::Psbt = bitcoin::psbt::Psbt::from_str(psbt_str)?;
+
+    // verify hash
+    if let Some(ref expect) = proof.psbt_hash {
+        let bytes = base64::decode(psbt_str)?;
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let digest = hex::encode(hasher.finalize());
+        anyhow::ensure!(&digest == expect, "Signed PSBT does not match draft (hash mismatch)");
+    }
+
+    anyhow::ensure!(psbt.inputs.len() == proof.commitments.len(), "Signed PSBT structure altered; aborting.");
+
+    proof.ownership_proofs.clear();
+    for (idx, input) in psbt.inputs.iter().enumerate() {
+        if let Some((_, sig)) = input.partial_sigs.iter().next() {
+            proof.ownership_proofs.push(hex::encode(sig.to_vec()));
+        } else if let Some(sig) = input.tap_key_sig {
+            proof.ownership_proofs.push(hex::encode(sig.to_vec()));
+        } else {
+            anyhow::bail!("Signed PSBT lacks sig for input {}", idx);
+        }
+    }
     Ok(())
 }
 
