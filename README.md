@@ -109,6 +109,8 @@ If all checks pass you’ll see `✅ proof verified`.
 * **Base‑64 engine** – now uses `engine::general_purpose` for encoding and decoding.
 * **Optional Halo 2 backend** – design allows dropping in a different ZKP backend with Cargo `--features halo2-backend` later.
 
+For a more detailed plan of upcoming work, see [ROADMAP.md](ROADMAP.md).
+
 ---
 
 \## Directory layout
