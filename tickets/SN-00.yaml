@@ -1,0 +1,9 @@
+id: SN-00
+description: |
+  Write a Rust binary `snapshot_tool` that connects to a `bitcoind` RPC,
+  iterates the UTXO set at a given height, emits a compact Merkle tree,
+  and prints the root hash.
+acceptance:
+  - cargo run --package snapshot_tool -- --help
+context_snippets:
+  - src/spec.md:L99-105

@@ -1,0 +1,9 @@
+id: BP-00
+description: |
+  Scaffold the `ppor_circuit` crate with feature-flag back-ends
+  (`bulletproofs`, `halo2`) and compile empty tests.
+acceptance:
+  - cargo test --package ppor_circuit
+context_snippets:
+  - src/spec.md:L99-105
+  - Cargo.toml:L1-34

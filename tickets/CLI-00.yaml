@@ -1,0 +1,9 @@
+id: CLI-00
+description: |
+  Generate initial Clap boilerplate for subcommands `generate` and
+  `verify`, complete with progress bars.
+acceptance:
+  - cargo run -- --help
+context_snippets:
+  - src/spec.md:L99-105
+  - src/main.rs:L1-68
