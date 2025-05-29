@@ -1,0 +1,57 @@
+# ------------------------------------------------------------
+# Rust / Cargo
+# ------------------------------------------------------------
+# Build output
+/target/
+
+/**/*.rs.bk
+**/*.swp
+Cargo.lock
+
+# Incremental compilation files
+/target/**/incremental
+/target/**/.fingerprint
+
+# LLVM & coverage artifacts
+/target/**/deps/*.d
+/target/**/deps/*.json
+*.profraw
+*.profdata
+
+# ------------------------------------------------------------
+# IDEs & Editors
+# ------------------------------------------------------------
+# VS Code
+.vscode/
+/*.code-workspace
+
+# JetBrains (CLion/RustRover/IntelliJ)
+.idea/
+*.iml
+
+# Vim / Neovim
+*.swp
+*.swo
+
+# Emacs
+*~
+
+# ------------------------------------------------------------
+# OS-generated junk
+# ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# ------------------------------------------------------------
+# Project-specific extras
+# ------------------------------------------------------------
+# Generated ZK proofs, snapshots or large JSONs
+*.proof.json
+*.utxo_snapshot*
+
+# Release binaries (if you `cargo build --release`)
+/target/release/private_proof_of_reserve_cli
+/private_proof_of_reserve_cli   # in case you `install` locally
+
+# Logs & misc
+*.log
