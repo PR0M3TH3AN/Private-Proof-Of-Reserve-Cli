@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use bulletproofs::{BulletproofGens, PedersenGens, RangeProof};
 use merlin::Transcript;
 use sha2::{Digest, Sha256};
+use base64::{engine::general_purpose, Engine as _};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -136,7 +137,7 @@ fn generate_proof(
         block_height: height,
         utxo_root: hex::encode(root),
         commitments: commitments.iter().map(hex::encode).collect(),
-        range_proof: base64::encode(bp.to_bytes()),   // deprecated API – ok for demo
+        range_proof: general_purpose::STANDARD.encode(bp.to_bytes()),
         ownership_proofs: Vec::new(),
         min_amount: min,
     })
@@ -156,7 +157,7 @@ fn verify_proof(pf: &Proof, rpc_url: &str, rpc_user: &str, rpc_pass: &str) -> Re
 
     anyhow::ensure!(hex::encode(merkle_root(leaves)) == pf.utxo_root, "root mismatch");
 
-    let _ = RangeProof::from_bytes(&base64::decode(&pf.range_proof)?)?;
+    let _ = RangeProof::from_bytes(&general_purpose::STANDARD.decode(&pf.range_proof)?)?;
     Ok(())
 }
 
