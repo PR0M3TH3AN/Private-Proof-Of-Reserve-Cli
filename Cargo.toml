@@ -1,36 +1,51 @@
+#######################################
+# Private Proof-of-Reserve – CLI crate #
+#######################################
+
 [package]
-name    = "private_proof_of_reserve_cli"
-version = "0.1.0"
-edition = "2021"
+name        = "private_proof_of_reserve_cli"
+version     = "0.1.0"
+edition     = "2021"
+license     = "MIT OR Apache-2.0"
+description = "CLI that builds and verifies private proof-of-reserve ZK proofs for Bitcoin."
+repository  = "https://github.com/<your-org>/Private-Proof-Of-Reserve-Cli"
 
 # ────────────────────────── Dependencies ──────────────────────────
 [dependencies]
-# CLI / UX
-clap        = { version = "4.5", features = ["derive"] }
+
+## CLI / UX
+clap        = { version = "4.5",  features = ["derive"] }
 indicatif   = "0.17"
 
-# Bitcoin & RPC
+## Bitcoin primitives & RPC
 bitcoin         = { version = "0.31", features = ["base64"] }
 bitcoincore-rpc = "0.18"
 
-# Crypto primitives
+## Cryptography & ZK
 bulletproofs        = { version = "4.0", optional = true }
 curve25519-dalek-ng = "4.1"
-rand                = "0.8"
 merlin              = "3.0"
+rand                = "0.8"
 
-# Hash / misc
-sha2   = "0.10"
-hex    = "0.4"
-base64 = "0.21"
-qrcodegen = "1.8"
-base58 = "0.2"
+## Hashing / encoding
+sha2      = "0.10"
+hex       = "0.4"
+base64    = "0.21"
+base58    = "0.2"
+qrcode   = "0.12"
 
-# Serde / error handling
+## JSON / error handling
 serde       = { version = "1.0", features = ["derive"] }
 serde_json  = "1.0"
 anyhow      = "1.0"
 
+# ───────────────────────── Features ───────────────────────────────
 [features]
 default              = ["bulletproofs-backend"]
 bulletproofs-backend = ["bulletproofs"]
+
+# ───────────────────────── Release profile ────────────────────────
+[profile.release]
+codegen-units = 1
+lto           = true
+panic         = "abort"

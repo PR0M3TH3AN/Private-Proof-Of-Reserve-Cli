@@ -1,47 +1,55 @@
 #![forbid(unsafe_code)]
 //! Prototype CLI for a lower-bound Bitcoin proof-of-reserve.
-//! SECURITY:  demo code only.
+//! SECURITY:  demo code only.  Do **not** use with real funds until
+//! every TODO is implemented and the code is audited.
 
 use std::{fs::File, path::PathBuf, str::FromStr, time::Duration};
-use anyhow::Result;
+
+use anyhow::{Result, Context};
+use base58::ToBase58;
+use base64::{engine::general_purpose as b64, Engine as _};
 use bitcoin::{Address, Txid};
 use bitcoin::address::NetworkChecked;
 use bitcoincore_rpc::{Auth, Client, RpcApi};
+use bulletproofs::{BulletproofGens, PedersenGens, RangeProof};
 use clap::{Parser, Subcommand};
-use curve25519_dalek_ng::scalar::Scalar;
-use curve25519_dalek_ng::ristretto::CompressedRistretto;
+use curve25519_dalek_ng::{ristretto::CompressedRistretto, scalar::Scalar};
+use merlin::Transcript;
+use qrcode::{QrCode, EcLevel, render::unicode};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
-use bulletproofs::{BulletproofGens, PedersenGens, RangeProof};
-use merlin::Transcript;
-use sha2::{Digest, Sha256};
-use base64::{engine::general_purpose, Engine as _};
-use qrcodegen::{QrCode, QrCodeEcc};
-use base58::ToBase58;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
+/// ─────────────────────────── CLI ────────────────────────────
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
-struct Cli { #[command(subcommand)] cmd: Cmd }
+struct Cli {
+    #[command(subcommand)]
+    cmd: Cmd,
+}
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
+    /// One-shot: generate proof JSON (still asks for private key)
     Generate {
         #[arg(long)] rpc_url: String,
         #[arg(long)] rpc_user: String,
         #[arg(long)] rpc_pass: String,
         #[arg(long)] address: String,
-        #[arg(long)] min: u64,          // sats
+        #[arg(long)] min: u64,
         #[arg(long)] height: u64,
         #[arg(long, default_value = "proof.json")]
         out: PathBuf,
     },
+    /// Verify proof JSON against a full node
     Verify {
         #[arg(long)] proof: PathBuf,
         #[arg(long)] rpc_url: String,
         #[arg(long)] rpc_user: String,
         #[arg(long)] rpc_pass: String,
     },
+    /// Step 1 of PSBT flow: build unsigned PSBT (+ draft Proof)
     BuildPsbt {
         #[arg(long)] rpc_url: String,
         #[arg(long)] rpc_user: String,
@@ -56,6 +64,7 @@ enum Cmd {
         #[arg(long, default_value = "draft.json")]
         draft_out: PathBuf,
     },
+    /// Step 2 of PSBT flow: merge signed PSBT, finish proof
     AttachSigs {
         #[arg(long)] draft: PathBuf,
         #[arg(long)] signed_psbt: PathBuf,
@@ -64,6 +73,7 @@ enum Cmd {
     },
 }
 
+/// ──────────────────── Proof JSON schema ─────────────────────
 #[derive(Debug, Serialize, Deserialize)]
 struct Proof {
     block_height: u64,
@@ -73,17 +83,16 @@ struct Proof {
     diff_commitment: String,
     ownership_proofs: Vec<String>,
     min_amount: u64,
-    #[serde(default)]
+    // new metadata
     psbt_hash: Option<String>,
-    #[serde(default)]
     signing_type: Option<String>,
 }
 
+/// ────────────────────────── main ────────────────────────────
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Generate { rpc_url, rpc_user, rpc_pass, address, min, height, out } => {
-            let proof = generate_proof(&rpc_url, &rpc_user, &rpc_pass,
-                                       &address, min, height)?;
+            let proof = generate_proof(&rpc_url, &rpc_user, &rpc_pass, &address, min, height)?;
             serde_json::to_writer_pretty(File::create(out)?, &proof)?;
             println!("✅ proof generated ({} commitments)", proof.commitments.len());
         }
@@ -92,7 +101,8 @@ fn main() -> Result<()> {
             verify_proof(&pf, &rpc_url, &rpc_user, &rpc_pass)?;
             println!("✅ proof verified");
         }
-        Cmd::BuildPsbt { rpc_url, rpc_user, rpc_pass, address, min, height, qr, psbt_out, draft_out } => {
+        Cmd::BuildPsbt { rpc_url, rpc_user, rpc_pass, address, min, height,
+                         qr, psbt_out, draft_out } => {
             let (psbt, draft) = build_psbt(&rpc_url, &rpc_user, &rpc_pass, &address, min, height)?;
             std::fs::write(&psbt_out, &psbt)?;
             serde_json::to_writer_pretty(File::create(&draft_out)?, &draft)?;
@@ -110,8 +120,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-// ── helpers ─────────────────────────────────────────────────
-
+/// ── UTXO helpers ────────────────────────────────────────────
 #[derive(Debug)]
 struct Utxo { txid: Txid, vout: u32, value: u64 }
 
@@ -125,11 +134,11 @@ fn fetch_utxos(rpc: &Client, addr: &Address<NetworkChecked>) -> Result<Vec<Utxo>
 fn commit_utxos(utxos: &[Utxo]) -> (Vec<[u8; 32]>, u64) {
     let pg = PedersenGens::default();
     let mut rng = OsRng;
-    let mut total = 0;
-    let commits: Vec<[u8; 32]> = utxos.iter().map(|u| {
+    let mut total = 0u64;
+    let commits = utxos.iter().map(|u| {
         total += u.value;
-        let r = Scalar::random(&mut rng);
-        pg.commit(Scalar::from(u.value), r).compress().to_bytes()
+        let blinder = Scalar::random(&mut rng);
+        pg.commit(Scalar::from(u.value), blinder).compress().to_bytes()
     }).collect();
     (commits, total)
 }
@@ -147,8 +156,7 @@ fn merkle_root(mut leaves: Vec<[u8; 32]>) -> [u8; 32] {
     leaves[0]
 }
 
-// ── generate ────────────────────────────────────────────────
-
+/// ── generate (single-shot) ──────────────────────────────────
 fn generate_proof(
     rpc_url: &str, rpc_user: &str, rpc_pass: &str,
     address: &str, min: u64, height: u64
@@ -157,8 +165,7 @@ fn generate_proof(
     let rpc = Client::new(rpc_url, Auth::UserPass(rpc_user.into(), rpc_pass.into()))?;
 
     let addr_raw = Address::from_str(address)?;
-    let net      = *addr_raw.network();
-    let addr_chk = addr_raw.require_network(net)?;
+    let addr_chk = addr_raw.clone().require_network(*addr_raw.network())?;
 
     let utxos = fetch_utxos(&rpc, &addr_chk)?;
     anyhow::ensure!(!utxos.is_empty(), "address has no UTXOs");
@@ -167,11 +174,10 @@ fn generate_proof(
     anyhow::ensure!(total >= min, "balance below threshold");
 
     let gens  = BulletproofGens::new(64, 1);
-    let blind = Scalar::random(&mut OsRng);
+    let blinder = Scalar::random(&mut OsRng);
     let mut t = Transcript::new(b"por");
-    let (bp, diff_commit) = RangeProof::prove_single(
-        &gens, &PedersenGens::default(), &mut t,
-        total - min, &blind, 64)?;
+    let (bp, diff_commit) =
+        RangeProof::prove_single(&gens, &PedersenGens::default(), &mut t, total - min, &blinder, 64)?;
 
     let root = merkle_root(commitments.clone());
 
@@ -179,45 +185,53 @@ fn generate_proof(
         block_height: height,
         utxo_root: hex::encode(root),
         commitments: commitments.iter().map(hex::encode).collect(),
-        range_proof: general_purpose::STANDARD.encode(bp.to_bytes()),
+        range_proof: b64::STANDARD.encode(bp.to_bytes()),
         diff_commitment: hex::encode(diff_commit.to_bytes()),
         ownership_proofs: Vec::new(),
         min_amount: min,
+        psbt_hash: None,
+        signing_type: None,
     })
 }
 
-// ── verify ──────────────────────────────────────────────────
-
+/// ── verify ──────────────────────────────────────────────────
 fn verify_proof(pf: &Proof, rpc_url: &str, rpc_user: &str, rpc_pass: &str) -> Result<()> {
     let rpc = Client::new(rpc_url, Auth::UserPass(rpc_user.into(), rpc_pass.into()))?;
     anyhow::ensure!(rpc.get_block_count()? as u64 >= pf.block_height, "node behind");
 
-    let leaves: Vec<[u8; 32]> = pf.commitments.iter().map(|h| {
+    // Merkle root
+    let mut leaves: Vec<[u8; 32]> = pf.commitments.iter().map(|h| {
         let mut b = [0u8; 32];
         b.copy_from_slice(&hex::decode(h).unwrap());
         b
     }).collect();
-
     anyhow::ensure!(hex::encode(merkle_root(leaves)) == pf.utxo_root, "root mismatch");
 
-    let bp_bytes = general_purpose::STANDARD.decode(&pf.range_proof)?;
+    // Range-proof
+    let bp_bytes = b64::STANDARD.decode(&pf.range_proof)?;
     let bp = RangeProof::from_bytes(&bp_bytes)?;
-    let v_bytes = hex::decode(&pf.diff_commitment)?;
-    let commitment = CompressedRistretto::from_slice(&v_bytes);
+    let commitment = CompressedRistretto::from_slice(
+        &hex::decode(&pf.diff_commitment)?);
     let mut t = Transcript::new(b"por");
-    bp.verify_single(&BulletproofGens::new(64, 1), &PedersenGens::default(), &mut t, &commitment, 64)?;
+    bp.verify_single(&BulletproofGens::new(64, 1), &PedersenGens::default(),
+                     &mut t, &commitment, 64)
+      .context("range-proof failed")?;
+
+    // ownership_proofs verification TODO
+
     Ok(())
 }
 
-// ── psbt workflow ────────────────────────────────────────────
+/// ── PSBT flow – build unsigned PSBT ─────────────────────────
+fn build_psbt(
+    rpc_url: &str, rpc_user: &str, rpc_pass: &str,
+    address: &str, min: u64, height: u64
+) -> Result<(String, Proof)> {
 
-fn build_psbt(rpc_url: &str, rpc_user: &str, rpc_pass: &str,
-              address: &str, min: u64, height: u64) -> Result<(String, Proof)> {
     let rpc = Client::new(rpc_url, Auth::UserPass(rpc_user.into(), rpc_pass.into()))?;
 
     let addr_raw = Address::from_str(address)?;
-    let net      = *addr_raw.network();
-    let addr_chk = addr_raw.require_network(net)?;
+    let addr_chk = addr_raw.clone().require_network(*addr_raw.network())?;
 
     let utxos = fetch_utxos(&rpc, &addr_chk)?;
     anyhow::ensure!(!utxos.is_empty(), "address has no UTXOs");
@@ -226,134 +240,116 @@ fn build_psbt(rpc_url: &str, rpc_user: &str, rpc_pass: &str,
     anyhow::ensure!(total >= min, "balance below threshold");
 
     let gens  = BulletproofGens::new(64, 1);
-    let blind = Scalar::random(&mut OsRng);
+    let blinder = Scalar::random(&mut OsRng);
     let mut t = Transcript::new(b"por");
-    let (bp, diff_commit) = RangeProof::prove_single(
-        &gens, &PedersenGens::default(), &mut t,
-        total - min, &blind, 64)?;
+    let (bp, diff_commit) =
+        RangeProof::prove_single(&gens, &PedersenGens::default(), &mut t, total - min, &blinder, 64)?;
 
-    let root = merkle_root(commitments.clone());
-    let merkle_hex = hex::encode(root);
-
-    let inputs: Vec<serde_json::Value> = utxos.iter()
+    // Build dummy PSBT
+    let root_hex = hex::encode(merkle_root(commitments.clone()));
+    let inputs: Vec<_> = utxos.iter()
         .map(|u| json!({"txid": u.txid, "vout": u.vout}))
         .collect();
     let options = json!({"feeRate": 0, "changePosition": -1, "lockUnspents": true});
     let res: serde_json::Value = rpc.call(
         "walletcreatefundedpsbt",
-        &[inputs.into(), json!({"data": merkle_hex.clone()}).into(), serde_json::Value::Null,
-          options.into(), true.into()])?;
-    let psbt_str = res["psbt"].as_str().unwrap().to_string();
+        &[inputs.into(),                     // inputs
+          json!({"data": root_hex.clone()}).into(), // outputs
+          serde_json::Value::Null,           // locktime
+          options.into(), true.into()])?;    // includeWatching
 
-    let psbt_bytes = base64::decode(&psbt_str)?;
-    let mut hasher = Sha256::new();
-    hasher.update(&psbt_bytes);
-    let psbt_hash = hex::encode(hasher.finalize());
+    let psbt_str = res["psbt"].as_str().context("rpc malformed")?.to_string();
+    let psbt_hash = hex::encode(Sha256::digest(&b64::STANDARD.decode(&psbt_str)?));
 
     let proof = Proof {
         block_height: height,
-        utxo_root: merkle_hex,
+        utxo_root: root_hex,
         commitments: commitments.iter().map(hex::encode).collect(),
-        range_proof: general_purpose::STANDARD.encode(bp.to_bytes()),
+        range_proof: b64::STANDARD.encode(bp.to_bytes()),
         diff_commitment: hex::encode(diff_commit.to_bytes()),
         ownership_proofs: Vec::new(),
         min_amount: min,
         psbt_hash: Some(psbt_hash),
-        signing_type: Some("psbt-opreturn-v1".to_string()),
+        signing_type: Some("psbt-opreturn-v1".into()),
     };
 
     Ok((psbt_str, proof))
 }
 
+/// Show PSBT as animated QR in the terminal
 fn display_qr_frames(data: &str, fps: u64) -> Result<()> {
     let raw = data.as_bytes();
     let chunks: Vec<&[u8]> = raw.chunks(400).collect();
-    println!("Building PSBT QR ({} frames, press Ctrl-C to abort) …", chunks.len());
-    for chunk in chunks.iter() {
-        let mut frame = Vec::new();
-        frame.extend_from_slice(chunk);
-        let text = frame.to_base58();
-        let qr = QrCode::encode_text(&text, QrCodeEcc::Low)?;
-        println!("{}", qr.to_string(true, 2));
+    println!("Building PSBT QR ({} frames, Ctrl-C to abort)…", chunks.len());
+    for chunk in chunks {
+        let frame_txt = chunk.to_base58();
+        let qr = QrCode::with_error_correction_level(frame_txt, EcLevel::L)?;
+        let art = qr.render::<unicode::Dense1x2>()
+                     .quiet_zone(false)
+                     .module_dimensions(2, 1)
+                     .build();
+        println!("{art}");
         std::thread::sleep(Duration::from_millis(1000 / fps));
     }
     Ok(())
 }
 
+/// Merge signed PSBT → fill ownership_proofs
 fn attach_sigs(proof: &mut Proof, psbt_str: &str) -> Result<()> {
     use std::str::FromStr;
     let psbt: bitcoin::psbt::Psbt = bitcoin::psbt::Psbt::from_str(psbt_str)?;
 
-    // verify hash
-    if let Some(ref expect) = proof.psbt_hash {
-        let bytes = base64::decode(psbt_str)?;
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        let digest = hex::encode(hasher.finalize());
-        anyhow::ensure!(&digest == expect, "Signed PSBT does not match draft (hash mismatch)");
+    // hash-tamper check
+    if let Some(expect) = &proof.psbt_hash {
+        let digest = Sha256::digest(&b64::STANDARD.decode(psbt_str)?);
+        anyhow::ensure!(hex::encode(digest) == *expect, "PSBT hash mismatch");
     }
 
-    anyhow::ensure!(psbt.inputs.len() == proof.commitments.len(), "Signed PSBT structure altered; aborting.");
+    anyhow::ensure!(
+        psbt.inputs.len() == proof.commitments.len(),
+        "Signed PSBT structure altered"
+    );
 
     proof.ownership_proofs.clear();
     for (idx, input) in psbt.inputs.iter().enumerate() {
-        if let Some((_, sig)) = input.partial_sigs.iter().next() {
-            proof.ownership_proofs.push(hex::encode(sig.to_vec()));
+        let sig_hex = if let Some((_, sig)) = input.partial_sigs.iter().next() {
+            hex::encode(sig.to_vec())
         } else if let Some(sig) = input.tap_key_sig {
-            proof.ownership_proofs.push(hex::encode(sig.to_vec()));
+            hex::encode(sig.to_vec())
         } else {
-            anyhow::bail!("Signed PSBT lacks sig for input {}", idx);
-        }
+            anyhow::bail!("Input {idx} lacks signature");
+        };
+        proof.ownership_proofs.push(sig_hex);
     }
     Ok(())
 }
 
-// ── tests ───────────────────────────────────────────────────
-
+/// ── mini-tests ──────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn merkle_root_single_leaf() {
+    fn merkle_root_single() {
         let leaf = [42u8; 32];
         assert_eq!(merkle_root(vec![leaf]), leaf);
     }
 
     #[test]
-    fn merkle_root_two_leaves() {
-        let a = [1u8; 32];
-        let b = [2u8; 32];
-        let mut h = Sha256::new();
-        h.update(a);
-        h.update(b);
-        let expected: [u8; 32] = h.finalize().into();
-        assert_eq!(merkle_root(vec![a, b]), expected);
+    fn merkle_root_two() {
+        let a = [1u8; 32]; let b = [2u8; 32];
+        let mut h = Sha256::new(); h.update(a); h.update(b);
+        let exp: [u8; 32] = h.finalize().into();
+        assert_eq!(merkle_root(vec![a, b]), exp);
     }
 
     #[test]
-    fn range_proof_verify_success() {
+    fn range_ok() {
         let gens = BulletproofGens::new(64, 1);
-        let pg = PedersenGens::default();
-        let v = 42u64;
-        let blind = Scalar::from(7u64);
+        let pg   = PedersenGens::default();
         let mut t = Transcript::new(b"por");
-        let (proof, commitment) = RangeProof::prove_single(&gens, &pg, &mut t, v, &blind, 64).unwrap();
+        let (p, c) = RangeProof::prove_single(&gens, &pg, &mut t, 42u64, &Scalar::from(7u64), 64).unwrap();
         let mut vt = Transcript::new(b"por");
-        assert!(proof.verify_single(&gens, &pg, &mut vt, &commitment, 64).is_ok());
-    }
-
-    #[test]
-    fn range_proof_verify_fail() {
-        let gens = BulletproofGens::new(64, 1);
-        let pg = PedersenGens::default();
-        let v = 42u64;
-        let blind = Scalar::from(7u64);
-        let mut t = Transcript::new(b"por");
-        let (proof, _commitment) = RangeProof::prove_single(&gens, &pg, &mut t, v, &blind, 64).unwrap();
-        // commitment for wrong value
-        let wrong_commitment = pg.commit(Scalar::from(43u64), Scalar::from(1u64)).compress();
-        let mut vt = Transcript::new(b"por");
-        assert!(proof.verify_single(&gens, &pg, &mut vt, &wrong_commitment, 64).is_err());
+        assert!(p.verify_single(&gens, &pg, &mut vt, &c, 64).is_ok());
     }
 }
