@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "private_proof_of_reserve_cli",
+    "snapshot_tool"
+]
+resolver = "2"
