@@ -68,7 +68,6 @@ por generate \
   --rpc-user alice \
   --rpc-pass supersecret \
   --address  bc1qexample... \
-  --sk       KxPrivateKeyWIF... \
   --min      10000000        # 0.1 BTC
   --height   840000          # snapshot reference
   --out      my_proof.json
