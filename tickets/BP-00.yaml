@@ -1,0 +1,10 @@
+id: BP-00
+description: |
+  Scaffold a new crate `ppor_circuit` with optional ZKP back-ends.
+  Provide feature flags `bulletproofs` and `halo2` but no logic yet.
+  Ensure the crate builds and an empty test suite runs.
+acceptance:
+  - cargo test --package ppor_circuit
+context_snippets:
+  - src/spec.md:L101-L105
+  - Cargo.toml:L16-L34
