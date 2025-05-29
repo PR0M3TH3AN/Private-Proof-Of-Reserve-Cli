@@ -122,5 +122,4 @@ DON’T:
 
 ---
 
-**Next step:**
-Create the three seed tickets (`SN-00`, `BP-00`, `CLI-00`) and push to `main`. The Codex CI runner will open the first PR within minutes for your review.
+**Seed tickets already available** – `SN-00`, `BP-00`, and `CLI-00` live under `tickets/` as starting examples.

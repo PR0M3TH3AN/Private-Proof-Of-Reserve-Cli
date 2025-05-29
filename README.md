@@ -106,7 +106,7 @@ If all checks pass you’ll see `✅ proof verified`.
 * **Merkle inclusion proofs** – each commitment needs a path to the UTXO‑set root so the verifier can rebuild the same Merkle root independently.
 * **Ownership proofs** – Schnorr signatures inside or alongside the ZK circuit to prove control of the pubkeys that guard the UTXOs.
 * **Full Bulletproof verification** – currently we only parse the bytes; enable full verification once the commitment‑diff scheme is finalised.
-* **Base‑64 engine upgrade** – swap deprecated `base64::encode/decode` for the modern *engine* API.
+* **Base‑64 engine** – now uses `engine::general_purpose` for encoding and decoding.
 * **Optional Halo 2 backend** – design allows dropping in a different ZKP backend with Cargo `--features halo2-backend` later.
 
 ---
