@@ -27,7 +27,6 @@ enum Cmd {
         #[arg(long)] rpc_user: String,
         #[arg(long)] rpc_pass: String,
         #[arg(long)] address: String,
-        #[arg(long)] sk: String,        // placeholder
         #[arg(long)] min: u64,          // sats
         #[arg(long)] height: u64,
         #[arg(long, default_value = "proof.json")]
@@ -53,9 +52,9 @@ struct Proof {
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Generate { rpc_url, rpc_user, rpc_pass, address, sk, min, height, out } => {
+        Cmd::Generate { rpc_url, rpc_user, rpc_pass, address, min, height, out } => {
             let proof = generate_proof(&rpc_url, &rpc_user, &rpc_pass,
-                                       &address, &sk, min, height)?;
+                                       &address, min, height)?;
             serde_json::to_writer_pretty(File::create(out)?, &proof)?;
             println!("✅ proof generated ({} commitments)", proof.commitments.len());
         }
@@ -109,7 +108,7 @@ fn merkle_root(mut leaves: Vec<[u8; 32]>) -> [u8; 32] {
 
 fn generate_proof(
     rpc_url: &str, rpc_user: &str, rpc_pass: &str,
-    address: &str, _sk: &str, min: u64, height: u64
+    address: &str, min: u64, height: u64
 ) -> Result<Proof> {
 
     let rpc = Client::new(rpc_url, Auth::UserPass(rpc_user.into(), rpc_pass.into()))?;
