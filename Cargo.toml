@@ -1,6 +1,9 @@
-[workspace]
-members = [
-    "private_proof_of_reserve_cli",
-    "snapshot_tool"
-]
-resolver = "2"
+[package]
+name    = "private_proof_of_reserve_cli"
+version = "0.1.0"
+edition = "2021"
+
+# … dependencies …
+# … features …
+
+# 🚫  NO  `[workspace]` section in this file
