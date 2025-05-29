@@ -6,7 +6,7 @@ A single‑binary command‑line tool that lets any Bitcoin holder prove **priva
 
 ---
 
-\## How it works (high level)
+## How it works (high level)
 
 | Step | Role         | What happens                                                                                                                                     |
 | ---- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -22,7 +22,7 @@ A single‑binary command‑line tool that lets any Bitcoin holder prove **priva
 
 ---
 
-\## Build instructions
+## Build instructions
 
 ```bash
 # Clone & build an optimised binary
@@ -38,7 +38,7 @@ cargo test
 ```
 
 
-\## Running a local Bitcoin node
+## Running a local Bitcoin node
 
 Add this to your `bitcoin.conf` (mainnet) and restart **bitcoind**:
 
@@ -58,7 +58,7 @@ bitcoin-cli -regtest -generate 150   # mature some coinbase blocks
 
 ---
 
-\## Usage
+## Usage
 
 ### 1  Generate a proof
 
@@ -100,7 +100,7 @@ If all checks pass you’ll see `✅ proof verified`.
 
 ---
 
-\## Design notes & roadmap
+## Design notes & roadmap
 
 * **Snapshot at height** – PoC uses the *current* UTXO set; production must freeze or attest to a deterministic snapshot (e.g. assumeUTXO + block hash).
 * **Merkle inclusion proofs** – each commitment needs a path to the UTXO‑set root so the verifier can rebuild the same Merkle root independently.
@@ -113,7 +113,7 @@ For a more detailed plan of upcoming work, see [ROADMAP.md](ROADMAP.md).
 
 ---
 
-\## Directory layout
+## Directory layout
 
 ```
 .
@@ -124,12 +124,12 @@ For a more detailed plan of upcoming work, see [ROADMAP.md](ROADMAP.md).
 
 ---
 
-\## License
+## License
 
 MIT
 ---
 
-\### Contact / contributions
+### Contact / contributions
 
 PRs, issues, and discussions are welcome.  Feel free to fork, experiment, and
 extend – especially around snapshotting, membership circuits, and audits.
