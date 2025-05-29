@@ -9,6 +9,7 @@ use bitcoin::address::NetworkChecked;
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use clap::{Parser, Subcommand};
 use curve25519_dalek_ng::scalar::Scalar;
+use curve25519_dalek_ng::ristretto::CompressedRistretto;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use bulletproofs::{BulletproofGens, PedersenGens, RangeProof};
@@ -46,6 +47,7 @@ struct Proof {
     utxo_root: String,
     commitments: Vec<String>,
     range_proof: String,
+    diff_commitment: String,
     ownership_proofs: Vec<String>,
     min_amount: u64,
 }
@@ -126,7 +128,7 @@ fn generate_proof(
     let gens  = BulletproofGens::new(64, 1);
     let blind = Scalar::random(&mut OsRng);
     let mut t = Transcript::new(b"por");
-    let (bp, _) = RangeProof::prove_single(
+    let (bp, diff_commit) = RangeProof::prove_single(
         &gens, &PedersenGens::default(), &mut t,
         total - min, &blind, 64)?;
 
@@ -137,6 +139,7 @@ fn generate_proof(
         utxo_root: hex::encode(root),
         commitments: commitments.iter().map(hex::encode).collect(),
         range_proof: general_purpose::STANDARD.encode(bp.to_bytes()),
+        diff_commitment: hex::encode(diff_commit.to_bytes()),
         ownership_proofs: Vec::new(),
         min_amount: min,
     })
@@ -156,7 +159,12 @@ fn verify_proof(pf: &Proof, rpc_url: &str, rpc_user: &str, rpc_pass: &str) -> Re
 
     anyhow::ensure!(hex::encode(merkle_root(leaves)) == pf.utxo_root, "root mismatch");
 
-    let _ = RangeProof::from_bytes(&general_purpose::STANDARD.decode(&pf.range_proof)?)?;
+    let bp_bytes = general_purpose::STANDARD.decode(&pf.range_proof)?;
+    let bp = RangeProof::from_bytes(&bp_bytes)?;
+    let v_bytes = hex::decode(&pf.diff_commitment)?;
+    let commitment = CompressedRistretto::from_slice(&v_bytes);
+    let mut t = Transcript::new(b"por");
+    bp.verify_single(&BulletproofGens::new(64, 1), &PedersenGens::default(), &mut t, &commitment, 64)?;
     Ok(())
 }
 
@@ -181,5 +189,31 @@ mod tests {
         h.update(b);
         let expected: [u8; 32] = h.finalize().into();
         assert_eq!(merkle_root(vec![a, b]), expected);
+    }
+
+    #[test]
+    fn range_proof_verify_success() {
+        let gens = BulletproofGens::new(64, 1);
+        let pg = PedersenGens::default();
+        let v = 42u64;
+        let blind = Scalar::from(7u64);
+        let mut t = Transcript::new(b"por");
+        let (proof, commitment) = RangeProof::prove_single(&gens, &pg, &mut t, v, &blind, 64).unwrap();
+        let mut vt = Transcript::new(b"por");
+        assert!(proof.verify_single(&gens, &pg, &mut vt, &commitment, 64).is_ok());
+    }
+
+    #[test]
+    fn range_proof_verify_fail() {
+        let gens = BulletproofGens::new(64, 1);
+        let pg = PedersenGens::default();
+        let v = 42u64;
+        let blind = Scalar::from(7u64);
+        let mut t = Transcript::new(b"por");
+        let (proof, _commitment) = RangeProof::prove_single(&gens, &pg, &mut t, v, &blind, 64).unwrap();
+        // commitment for wrong value
+        let wrong_commitment = pg.commit(Scalar::from(43u64), Scalar::from(1u64)).compress();
+        let mut vt = Transcript::new(b"por");
+        assert!(proof.verify_single(&gens, &pg, &mut vt, &wrong_commitment, 64).is_err());
     }
 }
