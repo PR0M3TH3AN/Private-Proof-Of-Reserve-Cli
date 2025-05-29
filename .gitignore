@@ -6,7 +6,6 @@
 
 /**/*.rs.bk
 **/*.swp
-Cargo.lock
 
 # Incremental compilation files
 /target/**/incremental
