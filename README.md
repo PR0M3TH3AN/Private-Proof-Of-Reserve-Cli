@@ -31,7 +31,12 @@ cargo build --release
 sudo install -m755 target/release/private_proof_of_reserve_cli /usr/local/bin/por
 ```
 
----
+## Running tests
+
+```bash
+cargo test
+```
+
 
 \## Running a local Bitcoin node
 

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Prototype CLI for a lower-bound Bitcoin proof-of-reserve.
 //! SECURITY:  demo code only.
 
@@ -157,4 +158,28 @@ fn verify_proof(pf: &Proof, rpc_url: &str, rpc_user: &str, rpc_pass: &str) -> Re
 
     let _ = RangeProof::from_bytes(&base64::decode(&pf.range_proof)?)?;
     Ok(())
+}
+
+// ── tests ───────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merkle_root_single_leaf() {
+        let leaf = [42u8; 32];
+        assert_eq!(merkle_root(vec![leaf]), leaf);
+    }
+
+    #[test]
+    fn merkle_root_two_leaves() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let mut h = Sha256::new();
+        h.update(a);
+        h.update(b);
+        let expected: [u8; 32] = h.finalize().into();
+        assert_eq!(merkle_root(vec![a, b]), expected);
+    }
 }
