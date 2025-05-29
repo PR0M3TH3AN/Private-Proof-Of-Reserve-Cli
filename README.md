@@ -126,8 +126,7 @@ For a more detailed plan of upcoming work, see [ROADMAP.md](ROADMAP.md).
 
 \## License
 
-MIT OR Apache‑2.0 – choose whichever works best for you.
-
+MIT
 ---
 
 \### Contact / contributions
